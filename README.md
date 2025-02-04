@@ -65,11 +65,11 @@ This will fetch data from the [Digitraffic Marine Port Calls API](https://meri.d
 
 #### Option 2: Read JSON from a local file (no API request)
 
-`python portman.py --input-file ./data/portnet_2025-02-03T10-00-00.json`
+`python portman.py --input-file ./tests/data/portnet_2025-02-03T10-00-00.json`
 
-#### Option 2: Read all portnet*.json files in given directory in natural order
+#### Option 3: Read all portnet*.json files in given directory in natural order
 
-`python portman.py --input-dir ./data`
+`python portman.py --input-dir ./tests/data`
 
 ### Track Specific Vessels
 Only process voyages for specified vessels by IMO numbers.
