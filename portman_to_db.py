@@ -283,6 +283,7 @@ def process_query(data, tracked_vessels):
 
         results.append({
             "portCallId": port_call_id,
+            "portCallTimestamp": entry.get("portCallTimestamp"),
             "imoLloyds": imo_number if imo_number else 0,
             "vesselTypeCode": entry.get("vesselTypeCode"),
             "vesselName": entry.get("vesselName"),
@@ -419,7 +420,26 @@ def save_results_to_db(results):
                 VALUES (%s, %s, %s, %s, %s, %s, %s);
                 """, (port_call_id, entry["eta"], old_ata, new_ata, entry["vesselName"], entry["portAreaName"], entry["berthName"]))
                 new_arrival_count += 1
-                log(f"Trigger executed: New arrival detected for portCallId {port_call_id} (old_ata: {old_ata}, new_ata: {new_ata})")
+                print(
+                    f"-----------------------------\n"
+                    f"Port Call ID: {port_call_id}\n"
+                    f"Port Call Time Stamp: {entry["portCallTimestamp"]}\n\n"
+                    f"Aluksen IMO/nimi: {imo_number}/{entry["vesselName"]}\n\n"
+                    f"Satamakoodi: {entry["portToVisit"]}\n"
+                    f"Satama: {entry["portAreaName"]}\n"
+                    f"Laituri: {entry["berthName"]}\n\n"
+                    f"Saapuminen\n"
+                    f"Arvioitu saapumisaika (UTC): {datetime.strptime(entry['eta'], '%Y-%m-%dT%H:%M:%S.%f%z').strftime('%Y-%m-%d %H:%M') if entry.get('eta') else 'N/A'}\n"
+                    f"Toteutunut saapumisaika (UTC): {datetime.strptime(new_ata, "%Y-%m-%dT%H:%M:%S.%f%z").strftime("%Y-%m-%d %H:%M") if new_ata else 'N/A'}\n"
+                    f"Miehistön lukumäärä: {entry["crewOnArrival"]}\n"
+                    f"Matkustajien lukumäärä: {entry["passengersOnArrival"]}\n\n"
+                    f"Lähtö\n"
+                    f"Arvioitu lähtöaika (UTC): {datetime.strptime(entry['etd'], '%Y-%m-%dT%H:%M:%S.%f%z').strftime('%Y-%m-%d %H:%M') if entry.get('etd') else 'N/A'}\n"
+                    f"Toteutunut lähtöaika (UTC): {datetime.strptime(entry['atd'], '%Y-%m-%dT%H:%M:%S.%f%z').strftime('%Y-%m-%d %H:%M') if entry.get('atd') else 'N/A'}\n"
+                    f"Miehistön lukumäärä: {entry["crewOnDeparture"]}\n"
+                    f"Matkustajien lukumäärä: {entry["passengersOnDeparture"]}\n"
+                )
+                #log(f"Trigger executed: New arrival detected for portCallId {port_call_id} (old_ata: {old_ata}, new_ata: {new_ata})")
 
         conn.commit()
         cursor.close()

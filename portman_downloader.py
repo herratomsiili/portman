@@ -28,17 +28,16 @@ def format_port_calls(data):
         # Extract required fields
         port_call_id = entry.get("portCallId", "N/A")
         port_call_timestamp = entry.get("portCallTimestamp", "N/A")
+        imo_lloyds = entry.get("imoLloyds", "N/A")
         vessel_name = entry.get("vesselName", "N/A")
         port_to_visit = entry.get("portToVisit", "N/A")
 
         # Extract portAreaName and berthName from "portAreaDetails"
         port_area_details = entry.get("portAreaDetails", [])
-        if port_area_details:
-            port_area_name = port_area_details[0].get("portAreaName", "N/A")
-            berth_name = port_area_details[0].get("berthName", "N/A")
-        else:
-            port_area_name = "N/A"
-            berth_name = "N/A"
+        port_area_name = port_area_details[0].get("portAreaName", "N/A") if port_area_details else "N/A"
+        berth_name = port_area_details[0].get("berthName", "N/A") if port_area_details else "N/A"
+        eta = port_area_details[0].get("eta", "N/A") if port_area_details else "N/A"
+        ata = port_area_details[0].get("ata", "N/A") if port_area_details else "N/A"
 
         # Extract Arrival and Departure data from "imoInformation" array
         imo_info = entry.get("imoInformation", [])
@@ -55,14 +54,16 @@ def format_port_calls(data):
             f"-----------------------------\n"
             f"Port Call ID: {port_call_id}\n"
             f"Port Call Time Stamp: {port_call_timestamp}\n\n"
-            f"Aluksen nimi: {vessel_name}\n\n"
+            f"Aluksen IMO/nimi: {imo_lloyds}/{vessel_name}\n\n"
             f"Satamakoodi: {port_to_visit}\n"
             f"Satama: {port_area_name}\n"
             f"Laituri: {berth_name}\n\n"
-            f"Arrival\n"
+            f"Saapuminen\n"
+            f"Arvioitu saapumisaika (UTC): {eta}\n"
+            f"Toteutunut saapumisaika (UTC): {ata}\n"
             f"Miehistön lukumäärä: {arrival_crew}\n"
             f"Matkustajien lukumäärä: {arrival_passengers}\n\n"
-            f"Departure\n"
+            f"Lähtö\n"
             f"Miehistön lukumäärä: {departure_crew}\n"
             f"Matkustajien lukumäärä: {departure_passengers}\n"
         )
