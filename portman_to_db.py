@@ -3,6 +3,12 @@ import pg8000
 from datetime import datetime
 import schedule
 import time
+import os
+import argparse
+import json
+import glob
+import natsort
+from config import DATABASE_CONFIG
 
 # Default database connection parameters
 DB_USER = "postgres"
@@ -24,12 +30,39 @@ def get_db_connection(database):
     """Establish and return a database connection to a specified database."""
     try:
         conn = pg8000.connect(
-            user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT, database=database
+            database=DATABASE_CONFIG["dbname"],
+            user=DATABASE_CONFIG["user"],
+            password=DATABASE_CONFIG["password"],
+            host=DATABASE_CONFIG["host"],
+            port=DATABASE_CONFIG["port"]
         )
         return conn
     except Exception as e:
         log(f"Error connecting to database '{database}': {e}")
         return None
+
+def get_tracked_vessels():
+    """Get IMO numbers to track from environment variables or command-line arguments."""
+    parser = argparse.ArgumentParser(description="Portman Tracking Options")
+    parser.add_argument("--imo", help="Comma-separated list of IMO numbers to track")
+    args = parser.parse_args()
+
+    # Read from command-line argument first
+    if args.imo:
+        tracked_set = set(map(int, args.imo.split(",")))
+        log(f"Tracking vessels from CLI argument: {tracked_set}")
+        return tracked_set
+
+    # Fallback to environment variable
+    tracked_env = os.getenv("TRACKED_VESSELS")
+    if tracked_env:
+        tracked_set = set(map(int, tracked_env.split(",")))
+        log(f"Tracking vessels from ENV variable: {tracked_set}")
+        return tracked_set
+
+    log("No vessel filtering applied. Tracking all vessels.")
+    return None  # No filtering if not set
+
 
 def create_database_and_tables():
     """Create the database and the necessary tables if they don't exist."""
@@ -60,14 +93,15 @@ def create_database_and_tables():
         # Create the 'voyages' table
         create_voyages_table = """
         CREATE TABLE IF NOT EXISTS voyages (
-            portCallId TEXT PRIMARY KEY,
-            imoLloyds TEXT,
+            portCallId INTEGER PRIMARY KEY,
+            imoLloyds INTEGER,
             vesselTypeCode TEXT,
             vesselName TEXT,
             prevPort TEXT,
             portToVisit TEXT,
             nextPort TEXT,
             agentName TEXT,
+            shippingCompany TEXT,
             eta TIMESTAMP NULL,
             ata TIMESTAMP NULL,
             portAreaCode TEXT,
@@ -78,6 +112,8 @@ def create_database_and_tables():
             atd TIMESTAMP NULL,
             passengersOnArrival INTEGER DEFAULT 0,
             passengersOnDeparture INTEGER DEFAULT 0,
+            crewOnArrival INTEGER DEFAULT 0,
+            crewOnDeparture INTEGER DEFAULT 0,
             created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -88,7 +124,7 @@ def create_database_and_tables():
         create_arrivals_table = """
         CREATE TABLE IF NOT EXISTS arrivals (
             id SERIAL PRIMARY KEY,
-            portCallId TEXT,
+            portCallId INTEGER,
             eta TIMESTAMP NULL,
             old_ata TIMESTAMP NULL,
             ata TIMESTAMP NOT NULL,
@@ -107,6 +143,72 @@ def create_database_and_tables():
     except Exception as e:
         log(f"Error setting up database and tables: {e}")
 
+def parse_arguments():
+    """Parse command-line arguments and environment variables."""
+    parser = argparse.ArgumentParser(description="Portman JSON Input Options")
+    parser.add_argument("--input-file", help="Path to a JSON input file")
+    parser.add_argument("--input-dir", help="Directory containing JSON files (portnet*.json)")
+    parser.add_argument("--imo", help="Comma-separated list of IMO numbers to track")
+    args = parser.parse_args()
+
+    return {
+        "input_file": args.input_file or os.getenv("INPUT_FILE"),
+        "input_dir": args.input_dir or os.getenv("INPUT_DIR"),
+        "tracked_vessels": set(map(int, args.imo.split(","))) if args.imo else set(map(int, os.getenv("TRACKED_VESSELS", "").split(","))) if os.getenv("TRACKED_VESSELS") else None
+    }
+
+def get_json_source(input_file, input_dir, tracked_vessels):
+    """Determine JSON data source: single file or directory of files."""
+    if input_file:
+        log(f"Reading JSON from file: {input_file}")
+        return read_json_from_file(input_file)
+
+    elif input_dir:
+        log(f"Reading JSON files from directory: {input_dir}")
+        read_json_from_directory(input_dir, tracked_vessels)  # Now processes files one by one
+        return None  # Processing is already handled
+
+    log("No input file or directory specified. Fetching from API instead.")
+    return None  # Fallback to API fetching
+
+def read_json_from_file(filepath):
+    """Read JSON data from a specified file."""
+    try:
+        with open(filepath, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception as e:
+        log(f"Error reading JSON file {filepath}: {e}")
+        return None
+
+def read_json_from_directory(directory, tracked_vessels):
+    """Read and process each JSON file separately, saving its data to the database."""
+    try:
+        file_pattern = os.path.join(directory, "portnet*.json")  # Match 'portnet*.json'
+        files = glob.glob(file_pattern)
+        sorted_files = natsort.natsorted(files)
+
+        log(f"Found {len(sorted_files)} matching JSON files in {directory}: {sorted_files}")
+
+        for filepath in sorted_files:
+            try:
+                log(f"Processing file: {filepath}")
+                with open(filepath, "r", encoding="utf-8") as file:
+                    data = json.load(file)
+
+                if "portCalls" in data and isinstance(data["portCalls"], list):
+                    results = process_query(data, tracked_vessels)
+                    save_results_to_db(results)  # Save after processing each file
+                    log(f"Finished processing {filepath}, {len(results)} voyages saved.")
+                else:
+                    log(f"Skipping file {filepath}: No valid 'portCalls' data found.")
+
+            except Exception as e:
+                log(f"Skipping file {filepath} due to error: {e}")
+
+    except Exception as e:
+        log(f"Error processing JSON directory {directory}: {e}")
+
+
 def fetch_data_from_api():
     """Fetch JSON data from the API."""
     url = "https://meri.digitraffic.fi/api/port-call/v1/port-calls"
@@ -120,7 +222,7 @@ def fetch_data_from_api():
         log(f"Error fetching data from API: {e}")
         return None
 
-def process_query(data):
+def process_query(data, tracked_vessels):
     """Process the JSON data and prepare results for database insertion."""
     if isinstance(data, dict) and "portCalls" in data:
         data = data["portCalls"]
@@ -129,27 +231,78 @@ def process_query(data):
         log("Error: Expected a list of port calls in the JSON data.")
         return []
 
+    log(f"Tracking only these vessels: {tracked_vessels}" if tracked_vessels else "Tracking all vessels.")
+
     results = []
     for entry in data:
+        try:
+            port_call_id = int(entry.get("portCallId"))  # Ensure it's always an integer
+            #imo_number = int(entry.get("imoLloyds"))  # Ensure it's always an integer
+        except (TypeError, ValueError):
+            #log(f"Skipping entry with invalid portCallId {entry.get('portCallId')} or imoLloyds {entry.get('imoLloyds')}")
+            log(f"Skipping entry with invalid portCallId {entry.get('portCallId')}")
+            continue  # Skip invalid values
+
+        imo_number = int(entry.get("imoLloyds")) if entry.get("imoLloyds") is not None else None  # Ensure it's always an integer
+        #log(f"Checking vessel {imo_number} with portCallId {port_call_id}...")  # Debugging
+
+        # Skip if filtering is enabled and the IMO number is not in the list
+        if tracked_vessels and imo_number not in tracked_vessels:
+            #log(f"Skipping vessel {imo_number} (not in tracked list).")
+            continue
+
+        if tracked_vessels:
+            log(f"Processing vessel {imo_number} with portCallId {port_call_id}...")  # Log vessel is being processed
+
+        # Extract agentName & shippingCompany from agentInfo[]
+        agent_name = None
+        shipping_company = None
+        for agent in entry.get("agentInfo", []):
+            if agent.get("role") == 1:
+                agent_name = agent.get("name")
+            elif agent.get("role") == 2:
+                shipping_company = agent.get("name")
+
+        # Extract passengers & crew from imoInformation[]
+        passengers_on_arrival = 0
+        passengers_on_departure = 0
+        crew_on_arrival = 0
+        crew_on_departure = 0
+
+        for imo in entry.get("imoInformation", []):
+            if imo.get("imoGeneralDeclaration") == "Arrival":
+                passengers_on_arrival = imo.get("numberOfPassangers", 0) or 0
+                crew_on_arrival = imo.get("numberOfCrew", 0) or 0
+            elif imo.get("imoGeneralDeclaration") == "Departure":
+                passengers_on_departure = imo.get("numberOfPassangers", 0) or 0
+                crew_on_departure = imo.get("numberOfCrew", 0) or 0
+
+        # Extract timestamps & berth info from portAreaDetails[0]
+        port_area_details = entry.get("portAreaDetails", [{}])
+        first_area = port_area_details[0] if port_area_details else {}
+
         results.append({
-            "portCallId": entry.get("portCallId", "N/A"),
-            "imoLloyds": entry.get("imoLloyds", "N/A"),
-            "vesselTypeCode": entry.get("vesselTypeCode", "N/A"),
-            "vesselName": entry.get("vesselName", "N/A"),
-            "prevPort": entry.get("prevPort", "N/A"),
-            "portToVisit": entry.get("portToVisit", "N/A"),
-            "nextPort": entry.get("nextPort", "N/A"),
-            "agentName": entry.get("agentInfo", [{}])[0].get("name", "N/A"),
-            "eta": entry.get("portAreaDetails", [{}])[0].get("eta"),
-            "ata": entry.get("portAreaDetails", [{}])[0].get("ata"),
-            "portAreaCode": entry.get("portAreaDetails", [{}])[0].get("portAreaCode", "N/A"),
-            "portAreaName": entry.get("portAreaDetails", [{}])[0].get("portAreaName", "N/A"),
-            "berthCode": entry.get("portAreaDetails", [{}])[0].get("berthCode", "N/A"),
-            "berthName": entry.get("portAreaDetails", [{}])[0].get("berthName", "N/A"),
-            "etd": entry.get("portAreaDetails", [{}])[0].get("etd"),
-            "atd": entry.get("portAreaDetails", [{}])[0].get("atd"),
-            "passengersOnArrival": sum(info.get("numberOfPassangers", 0) or 0 for info in entry.get("imoInformation", []) if info.get("imoGeneralDeclaration") == "Arrival"),
-            "passengersOnDeparture": sum(info.get("numberOfPassangers", 0) or 0 for info in entry.get("imoInformation", []) if info.get("imoGeneralDeclaration") == "Departure"),
+            "portCallId": port_call_id,
+            "imoLloyds": imo_number if imo_number else 0,
+            "vesselTypeCode": entry.get("vesselTypeCode"),
+            "vesselName": entry.get("vesselName"),
+            "prevPort": entry.get("prevPort"),
+            "portToVisit": entry.get("portToVisit"),
+            "nextPort": entry.get("nextPort"),
+            "agentName": agent_name,
+            "shippingCompany": shipping_company,
+            "eta": first_area.get("eta"),
+            "ata": first_area.get("ata"),
+            "portAreaCode": first_area.get("portAreaCode"),
+            "portAreaName": first_area.get("portAreaName"),
+            "berthCode": first_area.get("berthCode"),
+            "berthName": first_area.get("berthName"),
+            "etd": first_area.get("etd"),
+            "atd": first_area.get("atd"),
+            "passengersOnArrival": passengers_on_arrival,
+            "passengersOnDeparture": passengers_on_departure,
+            "crewOnArrival": crew_on_arrival,
+            "crewOnDeparture": crew_on_departure
         })
     log(f"Processed {len(results)} records.")
     return results
@@ -165,47 +318,59 @@ def save_results_to_db(results):
 
         new_arrival_count = 0  # Track the count of new arrivals
 
-        # Extract unique portCallIds from JSON data (ensure all are strings)
-        port_call_ids = list(set(str(entry["portCallId"]) for entry in results))
+        # Extract unique portCallIds from JSON data
+        port_call_ids = list(set(entry["portCallId"] for entry in results))
 
         # Fetch all old ata values in one query
         old_ata_map = {}
         if port_call_ids:
             query = f"""
-                SELECT portCallId::TEXT, ata FROM voyages WHERE portCallId IN ({','.join(['%s'] * len(port_call_ids))});
+                SELECT portCallId, ata FROM voyages WHERE portCallId IN ({','.join(['%s'] * len(port_call_ids))});
             """
             cursor.execute(query, tuple(port_call_ids))
             fetched_data = cursor.fetchall()
+
+            # Debugging: Log fetched data
+            log(f"Fetched {len(fetched_data)} existing records from voyages table.")
 
             # Populate old_ata_map with correctly formatted timestamps (ignore NULL values)
             for row in fetched_data:
                 port_call_id, old_ata = row
                 if old_ata:  # Only store valid timestamps
-                    formatted_ata = old_ata.strftime("%Y-%m-%d %H:%M:00")
-                    old_ata_map[str(port_call_id)] = formatted_ata  # Ensure keys are strings
+                    old_ata_map[int(port_call_id)] = old_ata.strftime("%Y-%m-%dT%H:%M:00.000Z")  # Normalize to minute level
+
+        # Debugging: Print entire old_ata_map
+        #log(f"Old ATA Map (after filtering NULLs): {old_ata_map}")
 
         for entry in results:
-            port_call_id = str(entry["portCallId"])  # Ensure lookup key is a string
+            port_call_id = int(entry["portCallId"])  # Ensure it's stored as an integer
+            imo_number = int(entry["imoLloyds"])  # Ensure it's stored as an integer
             new_ata = entry["ata"]
+            if new_ata:
+                new_ata = datetime.strptime(new_ata, "%Y-%m-%dT%H:%M:%S.%f%z").strftime("%Y-%m-%dT%H:%M:00.000Z")  # Normalize
 
             # Convert new_ata from JSON format to PostgreSQL TIMESTAMP format
-            new_ata_minute = None
-            if new_ata:
-                new_ata = datetime.strptime(new_ata[:19], "%Y-%m-%dT%H:%M:%S")  # Remove milliseconds & timezone
-                new_ata_minute = new_ata.strftime("%Y-%m-%d %H:%M:00")  # Format as "YYYY-MM-DD HH:MM:00"
+            #new_ata_minute = None
+            #if new_ata:
+            #    new_ata = datetime.strptime(new_ata[:19], "%Y-%m-%dT%H:%M:%S")  # Remove milliseconds & timezone
+            #    new_ata_minute = new_ata.strftime("%Y-%m-%d %H:%M:00")  # Format as "YYYY-MM-DD HH:MM:00"
 
             # Fetch old ata from the map (default to None)
-            old_ata_minute = old_ata_map.get(port_call_id, None)  # Now correctly handles mismatched types
+            #old_ata_minute = old_ata_map.get(port_call_id, None)  # Now correctly handles mismatched types
+
+            # Fetch old ata from the map (default to None)
+            old_ata = old_ata_map.get(port_call_id, None)
 
             # Insert or update voyages
             cursor.execute("""
             INSERT INTO voyages (
                 portCallId, imoLloyds, vesselTypeCode, vesselName, prevPort,
-                portToVisit, nextPort, agentName, eta, ata, portAreaCode, 
+                portToVisit, nextPort, agentName, shippingCompany, eta, ata, portAreaCode, 
                 portAreaName, berthCode, berthName, etd, atd, 
-                passengersOnArrival, passengersOnDeparture, modified
+                passengersOnArrival, passengersOnDeparture, crewOnArrival, crewOnDeparture, 
+                modified
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP
             )
             ON CONFLICT (portCallId) 
             DO UPDATE SET 
@@ -216,6 +381,7 @@ def save_results_to_db(results):
                 portToVisit = EXCLUDED.portToVisit,
                 nextPort = EXCLUDED.nextPort,
                 agentName = EXCLUDED.agentName,
+                shippingCompany = EXCLUDED.shippingCompany,
                 eta = EXCLUDED.eta,
                 ata = EXCLUDED.ata,
                 portAreaCode = EXCLUDED.portAreaCode,
@@ -226,23 +392,34 @@ def save_results_to_db(results):
                 atd = EXCLUDED.atd,
                 passengersOnArrival = EXCLUDED.passengersOnArrival,
                 passengersOnDeparture = EXCLUDED.passengersOnDeparture,
+                crewOnArrival = EXCLUDED.crewOnArrival,
+                crewOnDeparture = EXCLUDED.crewOnDeparture,
                 modified = CURRENT_TIMESTAMP;
             """, (
-                entry["portCallId"], entry["imoLloyds"], entry["vesselTypeCode"], entry["vesselName"],
+                port_call_id, imo_number, entry["vesselTypeCode"], entry["vesselName"],
                 entry["prevPort"], entry["portToVisit"], entry["nextPort"], entry["agentName"],
-                entry["eta"], new_ata, entry["portAreaCode"], entry["portAreaName"],
+                entry["shippingCompany"], entry["eta"], new_ata, entry["portAreaCode"], entry["portAreaName"],
                 entry["berthCode"], entry["berthName"], entry["etd"], entry["atd"],
-                entry["passengersOnArrival"], entry["passengersOnDeparture"]
+                entry["passengersOnArrival"], entry["passengersOnDeparture"], entry["crewOnArrival"],
+                entry["crewOnDeparture"]
             ))
 
             # Trigger notification if ata has changed at the minute level
-            if old_ata_minute != new_ata_minute and new_ata_minute is not None:
+            #if old_ata_minute != new_ata_minute and new_ata_minute is not None:
+            #    cursor.execute("""
+            #    INSERT INTO arrivals (portCallId, eta, old_ata, ata, vesselName, portAreaName, berthName)
+            #    VALUES (%s, %s, %s, %s, %s, %s, %s);
+            #    """, (port_call_id, entry["eta"], old_ata_minute, new_ata_minute, entry["vesselName"], entry["portAreaName"], entry["berthName"]))
+            #    new_arrival_count += 1
+            #    log(f"Trigger executed: New arrival detected for portCallId {port_call_id} (old_ata: {old_ata_minute}, new_ata: {new_ata_minute})")
+
+            if old_ata != new_ata and new_ata is not None:
                 cursor.execute("""
                 INSERT INTO arrivals (portCallId, eta, old_ata, ata, vesselName, portAreaName, berthName)
                 VALUES (%s, %s, %s, %s, %s, %s, %s);
-                """, (port_call_id, entry["eta"], old_ata_minute, new_ata_minute, entry["vesselName"], entry["portAreaName"], entry["berthName"]))
+                """, (port_call_id, entry["eta"], old_ata, new_ata, entry["vesselName"], entry["portAreaName"], entry["berthName"]))
                 new_arrival_count += 1
-                log(f"Trigger executed: New arrival detected for portCallId {port_call_id} (old_ata: {old_ata_minute}, new_ata: {new_ata_minute})")
+                log(f"Trigger executed: New arrival detected for portCallId {port_call_id} (old_ata: {old_ata}, new_ata: {new_ata})")
 
         conn.commit()
         cursor.close()
@@ -256,10 +433,24 @@ def save_results_to_db(results):
 def main():
     log("Program started.")
     create_database_and_tables()
-    data = fetch_data_from_api()
-    if data:
-        results = process_query(data)
-        save_results_to_db(results)
+
+    # Parse CLI arguments and environment variables
+    args = parse_arguments()
+
+    # Process JSON from input file or directory
+    if args["input_file"] or args["input_dir"]:
+        get_json_source(args["input_file"], args["input_dir"], args["tracked_vessels"])
+    else:
+        # If no file/directory is specified, fetch data from API
+        log("No input file or directory specified. Fetching from API...")
+        data = fetch_data_from_api()
+
+        if data:
+            results = process_query(data, args["tracked_vessels"])
+            save_results_to_db(results)
+        else:
+            log("No data available to process.")
+
     log("Program completed.")
 
 # Run the job once at startup
