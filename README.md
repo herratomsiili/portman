@@ -87,7 +87,7 @@ Only process voyages for specified vessels by IMO numbers.
 
 ```
 export TRACKED_VESSELS="9878319,9808259"
-python portman.py
+python portman_agent.py
 ```
 
 ## python_poller
