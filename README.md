@@ -19,12 +19,17 @@ cd portman
 Setup a virtual environment (venv):
 
 ```
-python3 -m venv venv
-source venv/bin/activate  # macOS/Linux
-venv\Scripts\activate      # Windows
+python3 -m venv .venv
+```
+```
+source .venv/bin/activate  # macOS/Linux
 ```
 
-Install depencies:
+```
+.venv\Scripts\activate      # Windows
+```
+
+Install dependencies:
 
 ```
 pip install -r requirements.txt

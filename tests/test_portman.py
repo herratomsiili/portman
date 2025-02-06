@@ -2,6 +2,7 @@ import sys
 import os
 import pytest
 import sqlite3
+from tabulate import tabulate
 
 # Ensure src is in the Python module search path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
@@ -88,28 +89,45 @@ def test_process_json_files(setup_database, input_file, input_dir, tracked_vesse
 
     #save_results_to_db(results, conn)
 
+    tracked_vessel_imo = list(tracked_vessels)[0]
     # Step 1: Check if vessel appears in `voyages`
-    cursor.execute("SELECT COUNT(*) FROM voyages WHERE imoLloyds = ?", (list(tracked_vessels)[0],))
+    cursor.execute("SELECT COUNT(*) FROM voyages WHERE imoLloyds = ?", (tracked_vessel_imo,))
     voyage_count = cursor.fetchone()[0]
     assert voyage_count > 0, f"No voyages found in DB for vessel IMO {tracked_vessels}"
 
     # Step 2: Check if at least one arrival is logged
-    cursor.execute("SELECT COUNT(*) FROM arrivals WHERE portCallId IN (SELECT portCallId FROM voyages WHERE imoLloyds = ?)", (list(tracked_vessels)[0],))
+    cursor.execute("SELECT COUNT(*) FROM arrivals WHERE portCallId IN (SELECT portCallId FROM voyages WHERE imoLloyds = ?)", (tracked_vessel_imo,))
     arrival_count = cursor.fetchone()[0]
     assert arrival_count > 0, "No new arrivals logged for tracked vessel."
 
-    # Step 3: Print vessel route
+    # Step 3: Fetch vessel name
+    cursor.execute("SELECT DISTINCT vesselName FROM voyages WHERE imoLloyds = ?", (tracked_vessel_imo,))
+    vessel_name = cursor.fetchone()[0] or "Unknown Vessel"
+
+    # Step 4: Print vessel route after assertions in a structured format
     cursor.execute("""
     SELECT portToVisit, prevPort, nextPort, ata, atd 
     FROM voyages 
     WHERE imoLloyds = ? 
     ORDER BY portToVisit, prevPort, nextPort;
-    """, (list(tracked_vessels)[0],))
+    """, (tracked_vessel_imo,))
 
     route = cursor.fetchall()
-    print("\n--- Vessel Route ---")
-    for row in route:
-        print(f"Port: {row[0]} (Previous: {row[1]}, Next: {row[2]}) | Arrival: {row[3]} | Departure: {row[4]}")
+    if route:
+        print(f"\n🛳️ **Vessel Route Summary - {vessel_name}** 🛳️\n")
+        headers = ["Port", "Previous Port", "Next Port", "Arrival (UTC)", "Departure (UTC)"]
+        print(tabulate(route, headers=headers, tablefmt="fancy_grid"))
+
+        print("\n🌍 **Route Flow** 🌍\n")
+        for i, row in enumerate(route):
+            port, prev_port, next_port, ata, atd = row
+            print(f"📍 {port} ({prev_port} → {port} → {next_port}) 🕓 Arrival: {ata} | Departure: {atd}")
+            if i < len(route) - 1:
+                print("    ↓")
+                print("    ↓")
+
+    else:
+        print("\n⚠️ No voyage route found.\n")
 
     # Ensure test output includes route print
     assert len(route) > 0, "No valid voyage route found."

@@ -72,15 +72,16 @@ def create_database_and_tables():
         cursor = conn.cursor()
 
         # Create database if it doesn't exist
-        cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s;", ("portman",))
+        db_name = DATABASE_CONFIG["dbname"]
+        cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (db_name,))
         if not cursor.fetchone():
-            log("Database 'portman' does not exist. Creating...")
-            cursor.execute("CREATE DATABASE portman;")
+            log("Database '" +  db_name + "' does not exist. Creating...")
+            cursor.execute(f"CREATE DATABASE {db_name};")
         cursor.close()
         conn.close()
 
         # Connect to the created database
-        conn = get_db_connection(DATABASE_CONFIG["dbname"])
+        conn = get_db_connection(db_name)
         if conn is None:
             return
         cursor = conn.cursor()
