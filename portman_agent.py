@@ -1,3 +1,4 @@
+import sqlite3
 import requests
 import pg8000
 from datetime import datetime
@@ -10,12 +11,6 @@ import glob
 import natsort
 from config import DATABASE_CONFIG
 
-# Default database connection parameters
-DB_USER = "postgres"
-DB_PASSWORD = "password"
-DB_HOST = "127.0.0.1"
-DB_PORT = 5432
-
 def log(message):
     """Log a message with a timestamp."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -26,11 +21,11 @@ def job():
     log("Fetching new data...")
     main()  # Calls the existing main function
 
-def get_db_connection(database):
+def get_db_connection(dbName):
     """Establish and return a database connection to a specified database."""
     try:
         conn = pg8000.connect(
-            database=DATABASE_CONFIG["dbname"],
+            database=dbName,
             user=DATABASE_CONFIG["user"],
             password=DATABASE_CONFIG["password"],
             host=DATABASE_CONFIG["host"],
@@ -38,7 +33,7 @@ def get_db_connection(database):
         )
         return conn
     except Exception as e:
-        log(f"Error connecting to database '{database}': {e}")
+        log(f"Error connecting to database '{dbName}': {e}")
         return None
 
 def get_tracked_vessels():
@@ -85,7 +80,7 @@ def create_database_and_tables():
         conn.close()
 
         # Connect to the created database
-        conn = get_db_connection("portman")
+        conn = get_db_connection(DATABASE_CONFIG["dbname"])
         if conn is None:
             return
         cursor = conn.cursor()
@@ -180,7 +175,7 @@ def read_json_from_file(filepath):
         log(f"Error reading JSON file {filepath}: {e}")
         return None
 
-def read_json_from_directory(directory, tracked_vessels):
+def read_json_from_directory(directory, tracked_vessels, conn=None):
     """Read and process each JSON file separately, saving its data to the database."""
     try:
         file_pattern = os.path.join(directory, "portnet*.json")  # Match 'portnet*.json'
@@ -197,7 +192,7 @@ def read_json_from_directory(directory, tracked_vessels):
 
                 if "portCalls" in data and isinstance(data["portCalls"], list):
                     results = process_query(data, tracked_vessels)
-                    save_results_to_db(results)  # Save after processing each file
+                    save_results_to_db(results, conn)  # Save after processing each file
                     log(f"Finished processing {filepath}, {len(results)} voyages saved.")
                 else:
                     log(f"Skipping file {filepath}: No valid 'portCalls' data found.")
@@ -308,11 +303,15 @@ def process_query(data, tracked_vessels):
     log(f"Processed {len(results)} records.")
     return results
 
-def save_results_to_db(results):
+def save_results_to_db(results, conn=None):
     """Save processed results into the 'voyages' table and trigger arrivals only when `ata` is updated at the minute level."""
     try:
         log(f"Saving {len(results)} records to the database...")
-        conn = get_db_connection("portman")
+        connection_managed_elsewhere = conn is not None
+
+        if conn is None:
+            conn = get_db_connection(DATABASE_CONFIG["dbname"])
+
         if conn is None:
             return
         cursor = conn.cursor()
@@ -325,10 +324,17 @@ def save_results_to_db(results):
         # Fetch all old ata values in one query
         old_ata_map = {}
         if port_call_ids:
+            # Detect if using SQLite
+            is_sqlite = isinstance(conn, sqlite3.Connection)
+            placeholder = "?" if is_sqlite else "%s"
+
+            # Fetch old ATA values using proper placeholders
+            port_call_ids = list(set(entry["portCallId"] for entry in results))
             query = f"""
-                SELECT portCallId, ata FROM voyages WHERE portCallId IN ({','.join(['%s'] * len(port_call_ids))});
+                SELECT portCallId, ata FROM voyages WHERE portCallId IN ({','.join([placeholder] * len(port_call_ids))});
             """
             cursor.execute(query, tuple(port_call_ids))
+
             fetched_data = cursor.fetchall()
 
             # Debugging: Log fetched data
@@ -340,9 +346,6 @@ def save_results_to_db(results):
                 if old_ata:  # Only store valid timestamps
                     old_ata_map[int(port_call_id)] = old_ata.strftime("%Y-%m-%dT%H:%M:00.000Z")  # Normalize to minute level
 
-        # Debugging: Print entire old_ata_map
-        #log(f"Old ATA Map (after filtering NULLs): {old_ata_map}")
-
         for entry in results:
             port_call_id = int(entry["portCallId"])  # Ensure it's stored as an integer
             imo_number = int(entry["imoLloyds"])  # Ensure it's stored as an integer
@@ -350,53 +353,42 @@ def save_results_to_db(results):
             if new_ata:
                 new_ata = datetime.strptime(new_ata, "%Y-%m-%dT%H:%M:%S.%f%z").strftime("%Y-%m-%dT%H:%M:00.000Z")  # Normalize
 
-            # Convert new_ata from JSON format to PostgreSQL TIMESTAMP format
-            #new_ata_minute = None
-            #if new_ata:
-            #    new_ata = datetime.strptime(new_ata[:19], "%Y-%m-%dT%H:%M:%S")  # Remove milliseconds & timezone
-            #    new_ata_minute = new_ata.strftime("%Y-%m-%d %H:%M:00")  # Format as "YYYY-MM-DD HH:MM:00"
-
-            # Fetch old ata from the map (default to None)
-            #old_ata_minute = old_ata_map.get(port_call_id, None)  # Now correctly handles mismatched types
-
             # Fetch old ata from the map (default to None)
             old_ata = old_ata_map.get(port_call_id, None)
 
             # Insert or update voyages
-            cursor.execute("""
-            INSERT INTO voyages (
-                portCallId, imoLloyds, vesselTypeCode, vesselName, prevPort,
-                portToVisit, nextPort, agentName, shippingCompany, eta, ata, portAreaCode, 
-                portAreaName, berthCode, berthName, etd, atd, 
-                passengersOnArrival, passengersOnDeparture, crewOnArrival, crewOnDeparture, 
+            insert_query = f"""
+            INSERT INTO voyages (portCallId, imoLloyds, vesselTypeCode, vesselName, prevPort,
+                portToVisit, nextPort, agentName, shippingCompany, eta, ata, portAreaCode,
+                portAreaName, berthCode, berthName, etd, atd,
+                passengersOnArrival, passengersOnDeparture, crewOnArrival, crewOnDeparture,
                 modified
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP
-            )
-            ON CONFLICT (portCallId) 
-            DO UPDATE SET 
-                imoLloyds = EXCLUDED.imoLloyds,
-                vesselTypeCode = EXCLUDED.vesselTypeCode,
-                vesselName = EXCLUDED.vesselName,
-                prevPort = EXCLUDED.prevPort,
-                portToVisit = EXCLUDED.portToVisit,
-                nextPort = EXCLUDED.nextPort,
-                agentName = EXCLUDED.agentName,
-                shippingCompany = EXCLUDED.shippingCompany,
-                eta = EXCLUDED.eta,
-                ata = EXCLUDED.ata,
-                portAreaCode = EXCLUDED.portAreaCode,
-                portAreaName = EXCLUDED.portAreaName,
-                berthCode = EXCLUDED.berthCode,
-                berthName = EXCLUDED.berthName,
-                etd = EXCLUDED.etd,
-                atd = EXCLUDED.atd,
-                passengersOnArrival = EXCLUDED.passengersOnArrival,
-                passengersOnDeparture = EXCLUDED.passengersOnDeparture,
-                crewOnArrival = EXCLUDED.crewOnArrival,
-                crewOnDeparture = EXCLUDED.crewOnDeparture,
+            ) VALUES ({','.join([placeholder] * 21)}, CURRENT_TIMESTAMP)
+            ON CONFLICT (portCallId) DO UPDATE SET
+                imoLloyds = excluded.imoLloyds,
+                vesselTypeCode = excluded.vesselTypeCode,
+                vesselName = excluded.vesselName,
+                prevPort = excluded.prevPort,
+                portToVisit = excluded.portToVisit,
+                nextPort = excluded.nextPort,
+                agentName = excluded.agentName,
+                shippingCompany = excluded.shippingCompany,
+                eta = excluded.eta,
+                ata = excluded.ata,
+                portAreaCode = excluded.portAreaCode,
+                portAreaName = excluded.portAreaName,
+                berthCode = excluded.berthCode,
+                berthName = excluded.berthName,
+                etd = excluded.etd,
+                atd = excluded.atd,
+                passengersOnArrival = excluded.passengersOnArrival,
+                passengersOnDeparture = excluded.passengersOnDeparture,
+                crewOnArrival = excluded.crewOnArrival,
+                crewOnDeparture = excluded.crewOnDeparture,
                 modified = CURRENT_TIMESTAMP;
-            """, (
+            """
+
+            cursor.execute(insert_query, (
                 port_call_id, imo_number, entry["vesselTypeCode"], entry["vesselName"],
                 entry["prevPort"], entry["portToVisit"], entry["nextPort"], entry["agentName"],
                 entry["shippingCompany"], entry["eta"], new_ata, entry["portAreaCode"], entry["portAreaName"],
@@ -405,20 +397,15 @@ def save_results_to_db(results):
                 entry["crewOnDeparture"]
             ))
 
-            # Trigger notification if ata has changed at the minute level
-            #if old_ata_minute != new_ata_minute and new_ata_minute is not None:
-            #    cursor.execute("""
-            #    INSERT INTO arrivals (portCallId, eta, old_ata, ata, vesselName, portAreaName, berthName)
-            #    VALUES (%s, %s, %s, %s, %s, %s, %s);
-            #    """, (port_call_id, entry["eta"], old_ata_minute, new_ata_minute, entry["vesselName"], entry["portAreaName"], entry["berthName"]))
-            #    new_arrival_count += 1
-            #    log(f"Trigger executed: New arrival detected for portCallId {port_call_id} (old_ata: {old_ata_minute}, new_ata: {new_ata_minute})")
-
             if old_ata != new_ata and new_ata is not None:
-                cursor.execute("""
-                INSERT INTO arrivals (portCallId, eta, old_ata, ata, vesselName, portAreaName, berthName)
-                VALUES (%s, %s, %s, %s, %s, %s, %s);
-                """, (port_call_id, entry["eta"], old_ata, new_ata, entry["vesselName"], entry["portAreaName"], entry["berthName"]))
+                insert_arrival_query = f"""
+                INSERT INTO arrivals (portCallId, eta, old_ata, ata, vesselName, portAreaName, berthName, created)
+                VALUES ({','.join([placeholder] * 7)}, CURRENT_TIMESTAMP);
+                """
+                cursor.execute(insert_arrival_query, (
+                    port_call_id, entry["eta"], old_ata, new_ata,
+                    entry["vesselName"], entry["portAreaName"], entry["berthName"]
+                ))
                 new_arrival_count += 1
                 print(
                     f"-----------------------------\n"
@@ -443,7 +430,8 @@ def save_results_to_db(results):
 
         conn.commit()
         cursor.close()
-        conn.close()
+        if not connection_managed_elsewhere:
+            conn.close()
         log(f"{len(results)} records saved/updated in the database.")
         log(f"Total new arrivals detected: {new_arrival_count}")
 
@@ -458,34 +446,38 @@ def main():
     args = parse_arguments()
 
     # Process JSON from input file or directory
+    data = None
     if args["input_file"] or args["input_dir"]:
-        get_json_source(args["input_file"], args["input_dir"], args["tracked_vessels"])
+        data = get_json_source(args["input_file"], args["input_dir"], args["tracked_vessels"])
     else:
         # If no file/directory is specified, fetch data from API
         log("No input file or directory specified. Fetching from API...")
         data = fetch_data_from_api()
 
-        if data:
-            results = process_query(data, args["tracked_vessels"])
-            save_results_to_db(results)
-        else:
-            log("No data available to process.")
+    if data:
+        results = process_query(data, args["tracked_vessels"])
+        save_results_to_db(results)
+    else:
+        log("No data available to process.")
 
     log("Program completed.")
 
+if __name__ == "__main__":
+    main()
+
 # Run the job once at startup
-log("Running initial fetch...")
-job()
+#log("Running initial fetch...")
+#job()
 
 # Schedule the job every 5 minutes
-schedule.every(5).minutes.do(job)
+#schedule.every(5).minutes.do(job)
 
-log("Scheduler started. Fetching data every 5 minutes...")
+#log("Scheduler started. Fetching data every 5 minutes...")
 
 # Keep the program running, handle shutdown gracefully
-try:
-    while True:
-        schedule.run_pending()
-        time.sleep(1)  # Prevent CPU overuse
-except KeyboardInterrupt:
-    log("Shutting down scheduler gracefully. Goodbye!")
+#try:
+#    while True:
+#        schedule.run_pending()
+#        time.sleep(1)  # Prevent CPU overuse
+#except KeyboardInterrupt:
+#    log("Shutting down scheduler gracefully. Goodbye!")

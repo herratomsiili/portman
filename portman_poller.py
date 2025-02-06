@@ -38,6 +38,8 @@ def format_port_calls(data):
         berth_name = port_area_details[0].get("berthName", "N/A") if port_area_details else "N/A"
         eta = port_area_details[0].get("eta", "N/A") if port_area_details else "N/A"
         ata = port_area_details[0].get("ata", "N/A") if port_area_details else "N/A"
+        etd = port_area_details[0].get("etd", "N/A") if port_area_details else "N/A"
+        atd = port_area_details[0].get("atd", "N/A") if port_area_details else "N/A"
 
         # Extract Arrival and Departure data from "imoInformation" array
         imo_info = entry.get("imoInformation", [])
@@ -64,6 +66,8 @@ def format_port_calls(data):
             f"Miehistön lukumäärä: {arrival_crew}\n"
             f"Matkustajien lukumäärä: {arrival_passengers}\n\n"
             f"Lähtö\n"
+            f"Arvioitu lähtöaika (UTC): {etd}\n"
+            f"Toteutunut lähtöaika (UTC): {atd}\n"
             f"Miehistön lukumäärä: {departure_crew}\n"
             f"Matkustajien lukumäärä: {departure_passengers}\n"
         )
@@ -77,14 +81,14 @@ def main():
                 data = fetch_data_from_api()
                 # Format and print the data
                 format_port_calls(data)
-                print("\nWaiting for 1 minute before fetching data again...\n")
+                print("\nWaiting for 5 minute before fetching data again...\n")
             except requests.RequestException as e:
                 print(f"Error fetching data from the API: {e}")
             except Exception as e:
                 print(f"An error occurred: {e}")
 
-            # Wait for 1 minute before polling again
-            time.sleep(60)
+            # Wait for 5 minute before polling again
+            time.sleep(300)
     except KeyboardInterrupt:
         print("\nPolling program stopped by user.")
 

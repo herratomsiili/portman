@@ -56,27 +56,27 @@ export DB_PORT="5432"
 ```
 
 ## Running the applications
-### python_to_db
+### portman_agent
 
 #### Option 1: Fetch data from the API
 This will fetch data from the [Digitraffic Marine Port Calls API](https://meri.digitraffic.fi/swagger/#/Port%20Call%20V1/listAllPortCalls) and process it. Json-data is fetched every 5 mins from external api, parsed and saved into 'voyages'-table in postgres db. When detecting a new port arrival, it is saved into 'arrivals'-table.
 
-`python portman_to_db.py`
+`python portman_agent.py`
 
 #### Option 2: Read JSON from a local file (no API request)
 
-`python portman.py --input-file ./tests/data/portnet_2025-02-03T10-00-00.json`
+`python portman_agent.py --input-file ./tests/data/portnet_2025-02-03T10-00-00.json`
 
 #### Option 3: Read all portnet*.json files in given directory in natural order
 
-`python portman.py --input-dir ./tests/data`
+`python portman_agent.py --input-dir ./tests/data`
 
 ### Track Specific Vessels
 Only process voyages for specified vessels by IMO numbers.
 
 #### Option 1: Using CLI Argument
 
-`python portman.py --imo 9878319,9808259`
+`python portman_agent.py --imo 9878319,9808259`
 
 #### Option 2: Using Environment Variable
 
@@ -85,16 +85,35 @@ export TRACKED_VESSELS="9878319,9808259"
 python portman.py
 ```
 
-## python_downloader
-Parses json-data and returns it in formatted output.
-### Option 1: Use Local JSON File
-`python portman_downloader.py --input-file <path_to_json>`
+## python_poller
+Fetches data from external API, parses and returns it in formatted output. Poller scheduled to run every 5 mins.
+### Running the application
+`python portman_poller.py`
 
-### Option 2: Fetch Data from API
-`python portman_downloader.py`
-
-## Stopping the Application
+### Stopping the Application
 If running in the foreground, press:
 ```
 CTRL + C
 ```
+
+## Tests
+
+### test_portman
+Tests if json-data contains voyage(s) and arrival(s) of certain vessel by imo-number. 
+Produces the route of the vessel as a test output. Utilisized by `pytest` and `sqlite3` in-memory database. 
+
+#### Usage
+```
+pytest -s tests/test_portman.py --input-file ./tests/data/portnet-20250101000032.json --imo 9878319
+```
+
+#### Arguments
+- Either argument `--input-dir` or `--input-file` must be provided.
+- Argument `--imo` must be provided.
+
+#### Options
+- With option `-s` stdout logs and print-messages are always displayed. 
+
+#### Validations
+- ✅ Passes if there is at least 1 arrival (with `ata`) found in json-data.
+- ❌ Failes if not.
