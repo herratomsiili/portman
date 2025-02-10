@@ -42,7 +42,7 @@ jobs:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}  # Azure App Service Name
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
           package: .  # Deploy the whole repository
-          startup-command: "python portman_poller.py"  # Start the app
+          #startup-command: "python portman_poller.py"  # Start the app
 
       # Logout from Azure (cleanup)
       - name: Logout from Azure
