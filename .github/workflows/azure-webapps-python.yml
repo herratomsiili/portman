@@ -13,8 +13,6 @@ permissions:
 env:
   AZURE_WEBAPP_NAME: "therranen-portman-app"  # set this to the name of your Azure Web App
   PYTHON_VERSION: "3.12"
-  TEST_INPUT_FILE: "./tests/data/portnet-20250101000032.json"
-  TEST_IMO: 9808259
 
 jobs:
   build-and-deploy:
