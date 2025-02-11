@@ -78,17 +78,6 @@ def test_process_json_files(setup_database, input_file, input_dir, tracked_vesse
     elif input_dir:
         read_json_from_directory(input_dir, tracked_vessels, conn)
 
-    # Use the actual function to process JSON data
-    #json_data = read_json_from_directory(input_dir, tracked_vessels)  # Track one vessel
-    read_json_from_directory(input_dir, tracked_vessels, conn)  # Track one vessel
-    #assert json_data is not None, "No data found in test JSON files."
-
-    # Process and save data
-    #results = process_query(json_data, tracked_vessels)
-    #assert len(results) > 0, "No voyages found for the tracked vessel."
-
-    #save_results_to_db(results, conn)
-
     tracked_vessel_imo = list(tracked_vessels)[0]
     # Step 1: Check if vessel appears in `voyages`
     cursor.execute("SELECT COUNT(*) FROM voyages WHERE imoLloyds = ?", (tracked_vessel_imo,))
@@ -109,7 +98,7 @@ def test_process_json_files(setup_database, input_file, input_dir, tracked_vesse
     SELECT portToVisit, prevPort, nextPort, ata, atd 
     FROM voyages 
     WHERE imoLloyds = ? 
-    ORDER BY portToVisit, prevPort, nextPort;
+    ORDER BY ata, atd;
     """, (tracked_vessel_imo,))
 
     route = cursor.fetchall()
