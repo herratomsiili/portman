@@ -16,6 +16,7 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    environment: Development
 
     steps:
       # Checkout the repository
@@ -36,19 +37,24 @@ jobs:
           pip install -r requirements.txt
 
       # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
-      - name: Run tests
-        run: |
-          pytest -s tests/ --input-file ./tests/data/portnet-20250101000032.json --imo 9808259
+
+      # Log in to Azure
+      - name: Log in to Azure
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
 
       # Deploy to Azure App Service
       - name: Deploy to Azure App Service
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}  # Azure App Service Name
-          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          #publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
           package: .  # Deploy the whole repository
-          #startup-command: "python portman_poller.py"  # Start the app
+          startup-command: "python portman_poller.py"  # Start the app
 
       # Logout from Azure (cleanup)
-      #- name: Logout from Azure
-      #  run: az logout
+      - name: Logout from Azure
+        run: az logout
