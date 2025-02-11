@@ -18,7 +18,7 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     environment:
-      name: Development
+      name: development
 
     steps:
       # Checkout the repository
@@ -43,8 +43,9 @@ jobs:
       - name: Run Tests
         run: |
           source venv/bin/activate
-          pytest -s tests/ --input-file ${{ vars.TEST_INPUT_FILE }} --imo ${{ vars.TEST_IMO }}
-
+          pytest -s tests/ --input-file ${{ vars.TEST_INPUT_FILE }} --imo ${{ vars.TEST_IMO_1 }}
+          pytest -s tests/ --input-dir ${{ vars.TEST_INPUT_DIR }} --imo ${{ vars.TEST_IMO_2 }}
+          
 
       # Log in to Azure
       - name: Log in to Azure
